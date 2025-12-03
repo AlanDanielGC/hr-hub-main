@@ -15,13 +15,25 @@ import { FileUploader } from '@/components/shared/FileUploader';
 import { toast } from 'sonner';
 import { Loader2 } from 'lucide-react';
 
+const containsAlphaNum = (val: string) => /\p{L}|\p{N}/u.test(val);
+
 const incidentSchema = z.object({
-  title: z.string().min(5, 'El título debe tener al menos 5 caracteres').max(200),
-  description: z.string().min(10, 'La descripción debe tener al menos 10 caracteres'),
+  title: z
+    .string()
+    .min(5, 'El título debe tener al menos 5 caracteres')
+    .max(200)
+    .refine((v) => containsAlphaNum(v), { message: 'El título no puede contener solo símbolos' }),
+  description: z
+    .string()
+    .min(10, 'La descripción debe tener al menos 10 caracteres')
+    .refine((v) => containsAlphaNum(v), { message: 'La descripción no puede contener solo símbolos' }),
   // Usamos slugs como valor guardado en DB y etiquetas separadas en la UI
   incident_type: z.enum(['falta_injustificada', 'falta_justificada', 'permiso_laboral', 'accidente_laboral', 'despido']),
   severity: z.enum(['baja', 'media', 'alta', 'critica']),
-  location: z.string().optional(),
+  location: z
+    .string()
+    .optional()
+    .refine((v) => (v === undefined || v === '' ? true : containsAlphaNum(v)), { message: 'La ubicación no puede contener solo símbolos' }),
 });
 
 type IncidentFormData = z.infer<typeof incidentSchema>;
@@ -74,6 +86,29 @@ export default function IncidentForm() {
   const mutation = useMutation({
     mutationFn: async (data: IncidentFormData) => {
       if (!user) throw new Error('No user found');
+
+      // Comprobar si ya existe una incidencia con los mismos campos (evitar duplicados exactos)
+      try {
+        let dupQuery: any = (supabase as any).from('incidents').select('id').eq('title', data.title.trim()).eq('description', data.description.trim()).eq('incident_type', data.incident_type).eq('severity', data.severity);
+        if (selectedProfile) {
+          dupQuery = dupQuery.eq('assigned_to', selectedProfile.user_id);
+        } else {
+          dupQuery = dupQuery.is('assigned_to', null);
+        }
+        const { data: existing } = await dupQuery.limit(1);
+        if (existing && existing.length > 0) {
+          const msg = 'Ya existe una incidencia con los mismos datos. Por favor revisa antes de crear.';
+          // Mostrar error en el campo título y lanzar para cancelar la mutación
+          try { form.setError('title' as any, { type: 'manual', message: msg }); } catch (e) { /* ignore if form not available */ }
+          throw new Error(msg);
+        }
+      } catch (e) {
+        // Si la comprobación de duplicados falló por un error de BD distinto, propagar
+        if ((e as Error).message && (e as Error).message.includes('Ya existe')) throw e;
+        // otherwise continue — but better to rethrow so mutation fails visibly
+        // (this helps surfacing DB errors early)
+        throw e;
+      }
 
       // Insertar la incidencia y luego, si hay archivos, crear registros en `documents`
       const insertPayload = {

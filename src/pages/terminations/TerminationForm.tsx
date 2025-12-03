@@ -29,15 +29,26 @@ import { toast } from 'sonner';
 import { useEffect, useState } from 'react';
 import { Loader2 } from 'lucide-react';
 
+const containsAlphaNum = (val: string) => /\p{L}|\p{N}/u.test(val);
+
 const terminationSchema = z.object({
   employee_id: z.string().min(1, 'Seleccione un empleado'),
   fecha_despido: z.string().min(1, 'La fecha es obligatoria'),
   tipo_despido: z.enum(['voluntario', 'involuntario', 'mutuo_acuerdo', 'termino_contrato']),
-  motivo: z.string().min(10, 'El motivo debe tener al menos 10 caracteres'),
+  motivo: z
+    .string()
+    .min(10, 'El motivo debe tener al menos 10 caracteres')
+    .refine((v) => containsAlphaNum(v), { message: 'El motivo no puede contener solo símbolos' }),
   estado: z.enum(['pendiente', 'en_proceso', 'completado', 'cancelado']),
-  indemnizacion: z.string().optional(),
-  liquidacion_final: z.string().optional(),
-  observaciones: z.string().optional(),
+  indemnizacion: z
+    .string()
+    .optional()
+    .refine((v) => (v === undefined || v === '' ? true : /^\d+(?:\.\d{1,2})?$/.test(v)), { message: 'Formato de indemnización inválido' }),
+  liquidacion_final: z
+    .string()
+    .optional()
+    .refine((v) => (v === undefined || v === '' ? true : /^\d+(?:\.\d{1,2})?$/.test(v)), { message: 'Formato de liquidación inválido' }),
+  observaciones: z.string().optional().refine((v) => (v === undefined || v === '' ? true : containsAlphaNum(v)), { message: 'Las observaciones no pueden contener solo símbolos' }),
 });
 
 type TerminationFormData = z.infer<typeof terminationSchema>;
@@ -311,7 +322,38 @@ export default function TerminationForm() {
         </CardHeader>
         <CardContent>
           <Form {...form}>
-            <form onSubmit={form.handleSubmit((data) => mutation.mutate(data))} className="space-y-6">
+            <form
+              onSubmit={form.handleSubmit(async (data) => {
+                // Si es creación (no edición), comprobar que no exista ya un despido para la misma persona
+                if (!isEdit) {
+                  try {
+                    const { data: existing, error: existError } = await supabase
+                      .from('despidos')
+                      .select('id')
+                      .eq('employee_id', data.employee_id)
+                      .limit(1);
+                    if (existError) {
+                      toast.error('Error verificando despidos existentes');
+                      return;
+                    }
+                    if (existing && (existing as any).length > 0) {
+                      form.setError('employee_id', {
+                        type: 'manual',
+                        message: 'Ya existe un despido registrado para esta persona.',
+                      });
+                      return;
+                    }
+                  } catch (err) {
+                    console.error('Error comprobando despidos existentes', err);
+                    toast.error('Error verificando despidos existentes');
+                    return;
+                  }
+                }
+
+                mutation.mutate(data);
+              })}
+              className="space-y-6"
+            >
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FormField
                   control={form.control}
