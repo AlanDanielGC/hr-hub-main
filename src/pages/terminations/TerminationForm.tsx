@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { supabase } from '@/integrations/supabase/client';
 import { FileUploader } from '@/components/shared/FileUploader';
+import { useAuth } from '@/contexts/AuthContext';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -42,6 +43,7 @@ const terminationSchema = z.object({
 type TerminationFormData = z.infer<typeof terminationSchema>;
 
 export default function TerminationForm() {
+  const { user } = useAuth();
   const { id } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -140,7 +142,8 @@ export default function TerminationForm() {
 
   const mutation = useMutation({
     mutationFn: async (data: TerminationFormData) => {
-      const userId = (await supabase.auth.getUser()).data.user?.id;
+      // Preferir el usuario del contexto (más fiable en el frontend), con fallback a supabase.auth
+      const userId = user?.id ?? (await supabase.auth.getUser()).data.user?.id;
       
       const payload = {
         employee_id: data.employee_id,
@@ -181,10 +184,32 @@ export default function TerminationForm() {
               uploaded_by: userId,
             }));
             const { error: docsError } = await supabase.from('despido_documentos').insert(docs);
-            if (docsError) {
-              // Compensación: eliminar archivos subidos si falla la inserción
-              await supabase.storage.from('documents').remove(uploadedPaths);
-              throw docsError;
+            if (docsError) throw docsError;
+
+            // Además, crear registros en la tabla `documents` para que aparezcan en DocumentsList
+            try {
+                const docRecords = uploadedPaths.map((p) => ({
+                title: `Documento Despido ${termination?.employee_id || data.employee_id}`,
+                description: `Adjunto relacionado con el despido ${id}`,
+                category: 'Despido',
+                employee_id: termination?.employee_id || data.employee_id,
+                is_public: false,
+                tags: null,
+                file_path: p,
+                version: 1,
+                uploaded_by: userId,
+                estado: 'pendiente',
+              }));
+
+              const { error: documentsError } = await supabase.from('documents').insert(docRecords as any);
+              if (documentsError) {
+                // Compensación: eliminar archivos subidos si falla la inserción en documents
+                await supabase.storage.from('documents').remove(uploadedPaths);
+                throw documentsError;
+              }
+            } catch (e) {
+              // si falla la inserción en documents, ya hicimos la compensación arriba
+              throw e;
             }
           } catch (e) {
             throw e;
@@ -221,6 +246,32 @@ export default function TerminationForm() {
               // Compensación: eliminar archivos subidos si falla la inserción
               await supabase.storage.from('documents').remove(uploadedPaths);
               throw docsError;
+            }
+          } catch (e) {
+            throw e;
+          }
+        }
+        // Además, registrar en `documents` para que aparezcan en DocumentsList
+        if (uploadedPaths.length > 0) {
+          try {
+            const docRecords = uploadedPaths.map((p) => ({
+              title: `Evidencia Despido`,
+              description: `Adjunto relacionado con el despido`,
+              category: 'Despido',
+              employee_id: newTermination.employee_id,
+              is_public: false,
+              tags: null,
+              file_path: p,
+              version: 1,
+              uploaded_by: userId,
+              estado: 'pendiente',
+            }));
+
+            const { error: documentsError } = await supabase.from('documents').insert(docRecords as any);
+            if (documentsError) {
+              // Compensación: eliminar archivos subidos si falla la inserción
+              await supabase.storage.from('documents').remove(uploadedPaths);
+              throw documentsError;
             }
           } catch (e) {
             throw e;

@@ -75,18 +75,49 @@ export default function IncidentForm() {
     mutationFn: async (data: IncidentFormData) => {
       if (!user) throw new Error('No user found');
 
-      const { error } = await (supabase as any)
+      // Insertar la incidencia y luego, si hay archivos, crear registros en `documents`
+      const insertPayload = {
+        ...data,
+        reported_by: user.id,
+        assigned_to: selectedProfile ? selectedProfile.user_id : null,
+        file_paths: filePaths.length > 0 ? filePaths : null,
+        status: 'abierto',
+      };
+
+      const { data: insertedData, error } = await (supabase as any)
         .from('incidents')
-        .insert([{
-          ...data,
-          reported_by: user.id,
-          // assigned_to: si hay perfil seleccionado, usar su user_id
-          assigned_to: selectedProfile ? selectedProfile.user_id : null,
-          file_paths: filePaths.length > 0 ? filePaths : null,
-          status: 'abierto',
-        }]);
+        .insert([insertPayload])
+        .select()
+        .single();
 
       if (error) throw error;
+
+      // Si hay archivos, crear registros en la tabla `documents` para que aparezcan en DocumentsList
+      if (filePaths.length > 0) {
+        try {
+          const docs = filePaths.map((p) => ({
+            title: `Evidencia Incidencia: ${data.title}`,
+            description: `Archivo adjunto para la incidencia reportada por ${user.id}`,
+            category: 'Incidencia',
+            employee_id: selectedProfile ? selectedProfile.user_id : null,
+            is_public: false,
+            tags: null,
+            file_path: p,
+            version: 1,
+            uploaded_by: user.id,
+            estado: 'pendiente',
+          }));
+
+          const { error: docsError } = await (supabase as any).from('documents').insert(docs as any);
+          if (docsError) {
+            // Compensación: eliminar archivos de storage si falla la inserción en documents
+            await supabase.storage.from('documents').remove(filePaths);
+            throw docsError;
+          }
+        } catch (e) {
+          throw e;
+        }
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['incidents'] });
